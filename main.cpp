@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <fcntl.h>
+#include <fcntl.h> // For open(), O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -140,7 +140,8 @@ int main(){
 			changeDirectory(command);
 			continue;
 		}
-
+		
+		int background_process = 0;
 		int redirection = 0, input_1 = -1, input_2 = -1, input_3 = -1;
 		for(int i=0; command[i] != NULL; i++){
 			if (strcmp(command[i], "<") == 0 || strcmp(command[i], ">") == 0 || strcmp(command[i], ">>") == 0){
@@ -151,8 +152,12 @@ int main(){
 					input_2 = i;
 				if (strcmp(command[i], ">>") == 0)
 					input_3 = i;
-			}
-		} // check for redirection operator
+			} // check for redirection opertor
+
+			if (strcmp(command[i], "&") == 0){
+					background_process = 1;
+			} // check if want process to run in background
+		}
 
 		pid_t pid = fork();
 		int file_descriptor = -1;
@@ -163,8 +168,6 @@ int main(){
 
 		else if (pid == 0){
 			// child process
-			
-
 			if (redirection == 1){
 				// redirection operator is present
 
@@ -210,7 +213,15 @@ int main(){
 
 		else{
 			// parent process
-			waitpid(pid, &status, WUNTRACED);
+			if (background_process == 0){
+				waitpid(pid, &status, WUNTRACED);
+				// we dont want the process to run in background, so we want the child process to finish first
+			}
+			else{
+				// we want process to run in background so we can continue using the shell, so we dont wait for the child process to finish first
+				// we print the process ID
+				printf("%d\n", pid);
+			}
 			if (redirection == 1){
 				// restore stdout and stdin
 				dup2(copy_stdin, STDOUT_FILENO);
