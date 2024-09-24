@@ -1,11 +1,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <fcntl.h> // For open(), O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <cstring>
 #include <ctype.h>
 #include <readline/readline.h>
 #include <readline/history.h>
+
 
 void removeExtraSpace(char *input){
 	char *clean_string = (char *)malloc(sizeof(char) * (strlen(input) + 1)); // sizeof(char) == 1
@@ -104,6 +108,10 @@ int main(){
 	size_t input_size = 0;
 	char **command;
 	int status;
+
+	int copy_stdout = dup(STDOUT_FILENO);
+	int copy_stdin = dup(STDIN_FILENO);
+	
 	while(1){
 		input = readline("unixsh> ");
 		// using getline doesnt allow for arrow movement (left and right) 
@@ -134,7 +142,21 @@ int main(){
 			continue;
 		}
 
+		int redirection = 0, input_1 = -1, input_2 = -1, input_3 = -1;
+		for(int i=0; command[i] != NULL; i++){
+			if (strcmp(command[i], "<") == 0 || strcmp(command[i], ">") == 0 || strcmp(command[i], ">>") == 0){
+				redirection = 1;
+				if (strcmp(command[i], "<") == 0)
+					input_1 = i;
+				if (strcmp(command[i], ">") == 0)
+					input_2 = i;
+				if (strcmp(command[i], ">>") == 0)
+					input_3 = i;
+			}
+		} // check for redirection operator
+
 		pid_t pid = fork();
+		int file_descriptor = -1;
 		
 		if (pid < 0){
 			fprintf(stderr, "Error in making child process\n");
@@ -142,6 +164,34 @@ int main(){
 
 		else if (pid == 0){
 			// child process
+			
+
+			if (redirection == 1){
+				// redirection operator is present
+				if (input_1 >= 0){
+					// '<' is present
+					file_descriptor = open(command[input_1+1] , O_RDONLY, 0644);
+					dup2(file_descriptor, STDIN_FILENO);
+					for(int i=input_1; command[i] != NULL; i++)
+						command[i] = NULL;
+				}
+
+				else if (input_2 >= 0){
+					file_descriptor = open(command[input_2+1] , O_WRONLY | O_CREAT | O_TRUNC, 0644);
+					dup2(file_descriptor, STDOUT_FILENO);
+					for(int i=input_2; command[i] != NULL; i++)
+						command[i] = NULL;
+				}
+
+				else{
+					file_descriptor = open(command[input_3+1] , O_WRONLY | O_CREAT | O_APPEND, 0644);
+					printf("%s\n", command[input_3+1]);
+					dup2(file_descriptor, STDOUT_FILENO);
+					for(int i=input_3; command[i] != NULL; i++)
+						command[i] = NULL;
+
+				}
+			}
 			execvp(command[0], command);
 			fprintf(stderr, "Error in running command %s\n", command[0]);
 			// this statement will only run when execvp is unsuccessful in running
@@ -150,6 +200,15 @@ int main(){
 		else{
 			// parent process
 			waitpid(pid, &status, WUNTRACED);
+			if (redirection == 1){
+				// restore stdout and stdin
+				dup2(copy_stdin, STDOUT_FILENO);
+				// dup2(a, b) means value of 'a' given to 'b', not vice versa
+				dup2(copy_stdout, STDIN_FILENO);
+				close(copy_stdout);
+				close(copy_stdin);
+				close(file_descriptor);
+			}
 		}
 
 		// printf("nah");
