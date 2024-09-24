@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <fcntl.h> // For open(), O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC
+#include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -105,7 +105,6 @@ void changeDirectory(char **command){
 int main(){
 
 	char *input;
-	size_t input_size = 0;
 	char **command;
 	int status;
 
@@ -168,30 +167,42 @@ int main(){
 
 			if (redirection == 1){
 				// redirection operator is present
+
 				if (input_1 >= 0){
 					// '<' is present
 					file_descriptor = open(command[input_1+1] , O_RDONLY, 0644);
 					dup2(file_descriptor, STDIN_FILENO);
-					for(int i=input_1; command[i] != NULL; i++)
-						command[i] = NULL;
 				}
 
-				else if (input_2 >= 0){
+				if (input_2 >= 0){
+					// '>' is present and '>>' is NOT present
+					// '>>' takes priority over '>'.
+					// ./a.out > testfile.txt >> newtestfile.txt --> newtestfile.txt gets output appended but testfile.txt BECOMES EMPTY (even if it contained some content earlier)
 					file_descriptor = open(command[input_2+1] , O_WRONLY | O_CREAT | O_TRUNC, 0644);
+					// O_TRUNC reduces the size of file to 0 bytes. removes the previous content present in it
 					dup2(file_descriptor, STDOUT_FILENO);
-					for(int i=input_2; command[i] != NULL; i++)
-						command[i] = NULL;
 				}
 
-				else{
+				if (input_3 >= 0){
+					// '>>' is present
 					file_descriptor = open(command[input_3+1] , O_WRONLY | O_CREAT | O_APPEND, 0644);
-					printf("%s\n", command[input_3+1]);
 					dup2(file_descriptor, STDOUT_FILENO);
-					for(int i=input_3; command[i] != NULL; i++)
-						command[i] = NULL;
-
 				}
+
+				int start = 7;
+				if (input_1 >= 0 and input_1 < start) start = input_1;
+				if (input_2 >= 0 and input_2 < start) start = input_2;
+				if (input_3 >= 0 and input_3 < start) start = input_3;
+
+				for(int i=start; command[i] != NULL; i++)
+					command[i] = NULL;
+				// we configure the array (command[i] = NULL) after checking all three
+				// redirection operators, because there may be several present in one command
+				// like ./a.out > file1 >> file2
+				// or ./a.out < file1 >> file2
+				// or ./a.out < file1 > file2 >> file3
 			}
+
 			execvp(command[0], command);
 			fprintf(stderr, "Error in running command %s\n", command[0]);
 			// this statement will only run when execvp is unsuccessful in running
