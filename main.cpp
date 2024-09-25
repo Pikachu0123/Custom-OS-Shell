@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <fcntl.h> // For open(), O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC
+#include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -140,7 +140,14 @@ int main(){
 			changeDirectory(command);
 			continue;
 		}
-		
+
+		int number_of_pipes = 0;
+		for(int i = 0; command[i] != NULL; i++){
+			if (strcmp(command[i], "|") == 0){
+				number_of_pipes += 1;
+			}
+		}
+
 		int background_process = 0;
 		int redirection = 0, input_1 = -1, input_2 = -1, input_3 = -1;
 		for(int i=0; command[i] != NULL; i++){
@@ -159,80 +166,176 @@ int main(){
 			} // check if want process to run in background
 		}
 
-		pid_t pid = fork();
-		int file_descriptor = -1;
-		
-		if (pid < 0){
-			fprintf(stderr, "Error in making child process\n");
-		}
-
-		else if (pid == 0){
-			// child process
-			if (redirection == 1){
-				// redirection operator is present
-
-				if (input_1 >= 0){
-					// '<' is present
-					file_descriptor = open(command[input_1+1] , O_RDONLY, 0644);
-					dup2(file_descriptor, STDIN_FILENO);
+		if (number_of_pipes > 0){
+			// since there are 'n' pipes, we need 'n+1' child processes
+			// and pipefd should be of size 2 * n
+			int pipefd[2 * number_of_pipes];
+			for(int i=0; i<number_of_pipes; i++){
+				if (pipe(pipefd + 2*i) == -1){
+					fprintf(stderr, "pipefd");
 				}
-
-				if (input_2 >= 0){
-					// '>' is present and '>>' is NOT present
-					// '>>' takes priority over '>'.
-					// ./a.out > testfile.txt >> newtestfile.txt --> newtestfile.txt gets output appended but testfile.txt BECOMES EMPTY (even if it contained some content earlier)
-					file_descriptor = open(command[input_2+1] , O_WRONLY | O_CREAT | O_TRUNC, 0644);
-					// O_TRUNC reduces the size of file to 0 bytes. removes the previous content present in it
-					dup2(file_descriptor, STDOUT_FILENO);
-				}
-
-				if (input_3 >= 0){
-					// '>>' is present
-					file_descriptor = open(command[input_3+1] , O_WRONLY | O_CREAT | O_APPEND, 0644);
-					dup2(file_descriptor, STDOUT_FILENO);
-				}
-
-				int start = 7;
-				if (input_1 >= 0 and input_1 < start) start = input_1;
-				if (input_2 >= 0 and input_2 < start) start = input_2;
-				if (input_3 >= 0 and input_3 < start) start = input_3;
-
-				for(int i=start; command[i] != NULL; i++)
-					command[i] = NULL;
-				// we configure the array (command[i] = NULL) after checking all three
-				// redirection operators, because there may be several present in one command
-				// like ./a.out > file1 >> file2
-				// or ./a.out < file1 >> file2
-				// or ./a.out < file1 > file2 >> file3
 			}
+			
+			char ***individual_commands = (char ***)malloc(sizeof(char **) * (8 + 1));
 
-			execvp(command[0], command);
-			fprintf(stderr, "Error in running command %s\n", command[0]);
-			// this statement will only run when execvp is unsuccessful in running
+			for(int i=0; i<=number_of_pipes; i++){
+				individual_commands[i] = (char **)malloc(sizeof(char *) * 10);
+			}
+			
+			int index = 0;
+			int j = 0;
+			for(int i=0; command[i] != NULL; i++){
+				if (strcmp(command[i], "|") == 0){
+					individual_commands[index][j] = NULL;
+					// printf("index: %d, j: %d\n",index,j);
+					index++;
+					j = 0;
+					continue;
+				}
+				individual_commands[index][j] = command[i];
+				// printf("index: %d, individual_commands[index][j]: %s\n", index, individual_commands[index][j]);
+				j++;
+			}
+			individual_commands[index][j] = NULL;
+
+			/*
+			suppose input = "ls -la | sort | more"
+			then command = ["ls", "-la", "|", "sort", "|", "more", NULL]
+			and individual_commands=
+			[
+			[ls, -la, null],
+			[sort, null],
+			[more, null]
+			]
+			*/
+			
+			// for(int i=0; command[i] != NULL; i++){
+			// 	printf("command[i]: %s\n", command[i]);
+			// }
+			// for(int i=0; i<=number_of_pipes; i++){
+			// 	printf("i: %d\n", i);
+			// 	for(int j=0; individual_commands[i][j] != NULL; j++){
+			// 		printf("%s, ", individual_commands[i][j]);
+			// 	}
+			// 	printf("\n");
+			// }
+
+			// n + 1 child processes
+		    for (int i = 0; i <= number_of_pipes; i++) {
+		        pid_t child_pid = fork();
+		        if (child_pid < 0) {
+		        	fprintf(stderr, "fork error");
+		        }
+		        if (child_pid == 0) { 
+			        // Child process
+		            if (i != 0) {
+		                dup2(pipefd[(i - 1) * 2], STDIN_FILENO); 
+		            }
+
+		            // Handle output to next pipe
+		            if (i != number_of_pipes) {
+		                dup2(pipefd[i * 2 + 1], STDOUT_FILENO); 
+		            }
+
+		            // Close all pipe descriptors
+		            for (int j = 0; j < 2 * number_of_pipes; j++) {
+		                close(pipefd[j]);
+		            }
+
+		            execvp(individual_commands[i][0], individual_commands[i]);
+		            fprintf(stderr, "execvp");
+		        }
+		    }
+
+		    for (int i = 0; i < 2 * number_of_pipes; i++) {
+		        close(pipefd[i]);
+		    }
+
+		    for (int i = 0; i <= number_of_pipes; i++) {
+		        wait(NULL);
+		    }
+
+		    for (int i = 0; i <= number_of_pipes; i++) {
+		        free(individual_commands[i]);
+		    }
+		    free(individual_commands);
 		}
-
+	
 		else{
-			// parent process
-			if (background_process == 0){
-				waitpid(pid, &status, WUNTRACED);
-				// we dont want the process to run in background, so we want the child process to finish first
+			pid_t pid = fork();
+			int file_descriptor = -1;
+			
+			if (pid < 0){
+				fprintf(stderr, "Error in making child process\n");
 			}
+
+			else if (pid == 0){
+				// child process
+				if (redirection == 1){
+					// redirection operator is present
+
+					if (input_1 >= 0){
+						// '<' is present
+						file_descriptor = open(command[input_1+1] , O_RDONLY, 0644);
+						dup2(file_descriptor, STDIN_FILENO);
+					}
+
+					if (input_2 >= 0){
+						// '>' is present and '>>' is NOT present
+						// '>>' takes priority over '>'.
+						// ./a.out > testfile.txt >> newtestfile.txt --> newtestfile.txt gets output appended but testfile.txt BECOMES EMPTY (even if it contained some content earlier)
+						file_descriptor = open(command[input_2+1] , O_WRONLY | O_CREAT | O_TRUNC, 0644);
+						// O_TRUNC reduces the size of file to 0 bytes. removes the previous content present in it
+						dup2(file_descriptor, STDOUT_FILENO);
+					}
+
+					if (input_3 >= 0){
+						// '>>' is present
+						file_descriptor = open(command[input_3+1] , O_WRONLY | O_CREAT | O_APPEND, 0644);
+						dup2(file_descriptor, STDOUT_FILENO);
+					}
+
+					int start = 7;
+					if (input_1 >= 0 and input_1 < start) start = input_1;
+					if (input_2 >= 0 and input_2 < start) start = input_2;
+					if (input_3 >= 0 and input_3 < start) start = input_3;
+
+					for(int i=start; command[i] != NULL; i++)
+						command[i] = NULL;
+					// we configure the array (command[i] = NULL) after checking all three
+					// redirection operators, because there may be several present in one command
+					// like ./a.out > file1 >> file2
+					// or ./a.out < file1 >> file2
+					// or ./a.out < file1 > file2 >> file3
+				}
+
+				execvp(command[0], command);
+				fprintf(stderr, "Error in running command %s\n", command[0]);
+				// this statement will only run when execvp is unsuccessful in running
+			}
+
 			else{
-				// we want process to run in background so we can continue using the shell, so we dont wait for the child process to finish first
-				// we print the process ID
-				printf("%d\n", pid);
-			}
-			if (redirection == 1){
-				// restore stdout and stdin
-				dup2(copy_stdin, STDOUT_FILENO);
-				// dup2(a, b) means value of 'a' given to 'b', not vice versa
-				dup2(copy_stdout, STDIN_FILENO);
-				close(copy_stdout);
-				close(copy_stdin);
-				close(file_descriptor);
+				// parent process
+				if (background_process == 0){
+					waitpid(pid, &status, WUNTRACED);
+					// we dont want the process to run in background, so we want the child process to finish first
+				}
+				else{
+					// we want process to run in background so we can continue using the shell, so we dont wait for the child process to finish first
+					// we print the process ID
+					printf("%d\n", pid);
+				}
+				if (redirection == 1){
+					// restore stdout and stdin
+					dup2(copy_stdin, STDOUT_FILENO);
+					// dup2(a, b) means value of 'a' given to 'b', not vice versa
+					dup2(copy_stdout, STDIN_FILENO);
+					close(copy_stdout);
+					close(copy_stdin);
+					close(file_descriptor);
+				}
 			}
 		}
-
 		// printf("nah");
 		free(command);
 	}
