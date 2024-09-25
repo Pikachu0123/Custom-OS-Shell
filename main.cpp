@@ -45,7 +45,7 @@ void removeExtraSpace(char *input){
 }
 
 char **breakInputString(char *input){
-	char **command = (char **)malloc(sizeof(char *) * 8);
+	char **command = (char **)malloc(sizeof(char *) * 20);
 	// Assuming 7 command line arguments with last argument as NULL
 
 	const char *delimiter = " ";
@@ -86,7 +86,7 @@ void changeDirectory(char **command){
 	
 	char *dir = command[1];	
 	// if (dir[0] == '\'' or dir[0] == '"'){
-	// 	for(int i=2; i < 8 && command[i] != NULL; i++){
+	// 	for(int i=2; i < 20 && command[i] != NULL; i++){
 	// 		strcat(dir, command[i] + ' ');
 	// 		int len = strlen(command[i]);
 	// 		if (command[i][len-1] == '\'' or command[i][len-1] == '"'){
@@ -100,6 +100,51 @@ void changeDirectory(char **command){
 		fprintf(stderr, "Error in changing directory to %s\n", dir);
 	}
 	return;
+}
+
+void change_input_output(char *command[], int input_1, int input_2, int input_3, int *file_descriptor){
+	if (input_1 >= 0){
+		// '<' is present
+		*file_descriptor = open(command[input_1+1] , O_RDONLY, 0644);
+		dup2(*file_descriptor, STDIN_FILENO);
+	}
+
+	if (input_2 >= 0){
+		// '>' is present and '>>' is NOT present
+		// '>>' takes priority over '>'.
+		// ./a.out > testfile.txt >> newtestfile.txt --> newtestfile.txt gets output appended but testfile.txt BECOMES EMPTY (even if it contained some content earlier)
+		*file_descriptor = open(command[input_2+1] , O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		// O_TRUNC reduces the size of file to 0 bytes. removes the previous content present in it
+		dup2(*file_descriptor, STDOUT_FILENO);
+	}
+
+	if (input_3 >= 0){
+		// '>>' is present
+		*file_descriptor = open(command[input_3+1] , O_WRONLY | O_CREAT | O_APPEND, 0644);
+		dup2(*file_descriptor, STDOUT_FILENO);
+	}
+
+	int start = 7;
+	if (input_1 >= 0 and input_1 < start) start = input_1;
+	if (input_2 >= 0 and input_2 < start) start = input_2;
+	if (input_3 >= 0 and input_3 < start) start = input_3;
+
+	for(int i=start; command[i] != NULL; i++)
+		command[i] = NULL;
+	// we configure the array (command[i] = NULL) after checking all three
+	// redirection operators, because there may be several present in one command
+	// like ./a.out > file1 >> file2
+	// or ./a.out < file1 >> file2
+	// or ./a.out < file1 > file2 >> file3
+}
+
+void restore_input_output(int *copy_stdin, int *copy_stdout, int *file_descriptor){
+	dup2(*copy_stdin, STDOUT_FILENO);
+	// dup2(a, b) means value of 'a' given to 'b', not vice versa
+	dup2(*copy_stdout, STDIN_FILENO);
+	close(*copy_stdout);
+	close(*copy_stdin);
+	close(*file_descriptor);
 }
 
 int main(){
@@ -150,6 +195,8 @@ int main(){
 
 		int background_process = 0;
 		int redirection = 0, input_1 = -1, input_2 = -1, input_3 = -1;
+		int file_descriptor = -1;
+
 		for(int i=0; command[i] != NULL; i++){
 			if (strcmp(command[i], "<") == 0 || strcmp(command[i], ">") == 0 || strcmp(command[i], ">>") == 0){
 				redirection = 1;
@@ -167,6 +214,12 @@ int main(){
 		}
 
 		if (number_of_pipes > 0){
+
+			if (redirection == 1){
+				// redirection and pipe both are present
+				change_input_output(command, input_1, input_2, input_3, &file_descriptor);
+			}
+
 			// since there are 'n' pipes, we need 'n+1' child processes
 			// and pipefd should be of size 2 * n
 			int pipefd[2 * number_of_pipes];
@@ -176,7 +229,7 @@ int main(){
 				}
 			}
 			
-			char ***individual_commands = (char ***)malloc(sizeof(char **) * (8 + 1));
+			char ***individual_commands = (char ***)malloc(sizeof(char **) * (20 + 1));
 
 			for(int i=0; i<=number_of_pipes; i++){
 				individual_commands[i] = (char **)malloc(sizeof(char *) * 10);
@@ -220,6 +273,7 @@ int main(){
 			// 	printf("\n");
 			// }
 
+			
 			// n + 1 child processes
 		    for (int i = 0; i <= number_of_pipes; i++) {
 		        pid_t child_pid = fork();
@@ -259,11 +313,15 @@ int main(){
 		        free(individual_commands[i]);
 		    }
 		    free(individual_commands);
+
+		    if (redirection == 1){
+		    	// restore stdin and stdout
+				restore_input_output(&copy_stdin, &copy_stdout, &file_descriptor);
+		    }
 		}
 	
 		else{
 			pid_t pid = fork();
-			int file_descriptor = -1;
 			
 			if (pid < 0){
 				fprintf(stderr, "Error in making child process\n");
@@ -273,40 +331,7 @@ int main(){
 				// child process
 				if (redirection == 1){
 					// redirection operator is present
-
-					if (input_1 >= 0){
-						// '<' is present
-						file_descriptor = open(command[input_1+1] , O_RDONLY, 0644);
-						dup2(file_descriptor, STDIN_FILENO);
-					}
-
-					if (input_2 >= 0){
-						// '>' is present and '>>' is NOT present
-						// '>>' takes priority over '>'.
-						// ./a.out > testfile.txt >> newtestfile.txt --> newtestfile.txt gets output appended but testfile.txt BECOMES EMPTY (even if it contained some content earlier)
-						file_descriptor = open(command[input_2+1] , O_WRONLY | O_CREAT | O_TRUNC, 0644);
-						// O_TRUNC reduces the size of file to 0 bytes. removes the previous content present in it
-						dup2(file_descriptor, STDOUT_FILENO);
-					}
-
-					if (input_3 >= 0){
-						// '>>' is present
-						file_descriptor = open(command[input_3+1] , O_WRONLY | O_CREAT | O_APPEND, 0644);
-						dup2(file_descriptor, STDOUT_FILENO);
-					}
-
-					int start = 7;
-					if (input_1 >= 0 and input_1 < start) start = input_1;
-					if (input_2 >= 0 and input_2 < start) start = input_2;
-					if (input_3 >= 0 and input_3 < start) start = input_3;
-
-					for(int i=start; command[i] != NULL; i++)
-						command[i] = NULL;
-					// we configure the array (command[i] = NULL) after checking all three
-					// redirection operators, because there may be several present in one command
-					// like ./a.out > file1 >> file2
-					// or ./a.out < file1 >> file2
-					// or ./a.out < file1 > file2 >> file3
+					change_input_output(command, input_1, input_2, input_3, &file_descriptor);
 				}
 
 				execvp(command[0], command);
@@ -327,12 +352,7 @@ int main(){
 				}
 				if (redirection == 1){
 					// restore stdout and stdin
-					dup2(copy_stdin, STDOUT_FILENO);
-					// dup2(a, b) means value of 'a' given to 'b', not vice versa
-					dup2(copy_stdout, STDIN_FILENO);
-					close(copy_stdout);
-					close(copy_stdin);
-					close(file_descriptor);
+					restore_input_output(&copy_stdin, &copy_stdout, &file_descriptor);
 				}
 			}
 		}
